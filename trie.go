@@ -18,43 +18,68 @@ type Trie struct {
 // and the pattern number.
 type WalkFn func(end, n, pattern int64) bool
 
-// Walk runs the algorithm on a given output, calling the supplied callback function on every
-// match. The algorithm will terminate if the callback function returns false.
-func (tr *Trie) Walk(input []byte, fn WalkFn) {
-	s := rootState
+// Walker supports incremental payload adding
+type Walker struct {
+	s       int64
+	i       int64
+	tr      *Trie
+	matches []*Match
+}
 
-	for i, c := range input {
-		t := tr.trans[s][c]
+func (tr *Trie) NewWalker() *Walker {
+	walker := &Walker{
+		s:       rootState,
+		i:       0,
+		tr:      tr,
+		matches: make([]*Match, 0),
+	}
+	return walker
+}
 
-		if t == nilState {
-			for u := tr.failLink[s]; u != rootState; u = tr.failLink[u] {
-				if t = tr.trans[u][c]; t != nilState {
-					break
-				}
-			}
+func (walker *Walker) WalkByte(c byte, fn WalkFn) {
+	tr, s := walker.tr, walker.s
+	t := tr.trans[s][c]
+	defer func(){walker.i++}()
 
-			if t == nilState {
-				if t = tr.trans[rootState][c]; t == nilState {
-					t = rootState
-				}
+	if t == nilState {
+		for u := tr.failLink[s]; u != rootState; u = tr.failLink[u] {
+			if t = tr.trans[u][c]; t != nilState {
+				break
 			}
 		}
 
-		s = t
+		if t == nilState {
+			if t = tr.trans[rootState][c]; t == nilState {
+				t = rootState
+			}
+		}
+	}
 
-		if tr.dict[s] != 0 {
-			if !fn(int64(i), tr.dict[s], tr.pattern[s]) {
+	s = t
+	walker.s = t
+
+	if tr.dict[s] != 0 {
+		if !fn(walker.i, tr.dict[s], tr.pattern[s]) {
+			return
+		}
+	}
+
+	if tr.dictLink[s] != nilState {
+		for u := tr.dictLink[s]; u != nilState; u = tr.dictLink[u] {
+			if !fn(walker.i, tr.dict[u], tr.pattern[u]) {
 				return
 			}
 		}
+	}
+}
 
-		if tr.dictLink[s] != nilState {
-			for u := tr.dictLink[s]; u != nilState; u = tr.dictLink[u] {
-				if !fn(int64(i), tr.dict[u], tr.pattern[u]) {
-					return
-				}
-			}
-		}
+// Walk runs the algorithm on a given output, calling the supplied callback function on every
+// match. The algorithm will terminate if the callback function returns false.
+func (tr *Trie) Walk(input []byte, fn WalkFn) {
+	walker := tr.NewWalker()
+
+	for _, c := range input {
+		walker.WalkByte(c, fn)
 	}
 }
 
@@ -68,6 +93,17 @@ func (tr *Trie) Match(input []byte) []*Match {
 	})
 	return matches
 }
+
+// Match runs the Aho-Corasick string-search algorithm on a byte input.
+func (walker *Walker) MatchByte(input byte) []*Match {
+	walker.WalkByte(input, func(end, n, pattern int64) bool {
+		pos := end - n + 1
+		walker.matches = append(walker.matches, newMatch(pos, pattern, []byte("")))
+		return true
+	})
+	return walker.matches
+}
+
 
 // MatchFirst is the same as Match, but returns after first successful match.
 func (tr *Trie) MatchFirst(input []byte) *Match {
